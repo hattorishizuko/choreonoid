@@ -82,6 +82,7 @@ static const double DEFAULT_CONTACT_CORRECTION_VELOCITY_RATIO = 1.0;
 static const double DEFAULT_CONTACT_CULLING_DISTANCE = 0.005;
 static const double DEFAULT_CONTACT_CULLING_DEPTH = 0.05;
 
+static const int DEFAULT_NUM_OF_CLUSTERS = 4;
 
 // test for mobile robots with wheels
 //static const double DEFAULT_CONTACT_CORRECTION_DEPTH = 0.005;
@@ -103,6 +104,8 @@ static const bool CFS_DEBUG_VERBOSE_3 = false;
 static const bool CFS_DEBUG_LCPCHECK = false;
 static const bool CFS_MCP_DEBUG = false;
 static const bool CFS_MCP_DEBUG_SHOW_ITERATION_STOP = false;
+static const bool K_MEANS_CLUSTERING_DEBUG = false;
+static const bool K_MEANS_CLUSTERING_DEBUG1 = false;
 
 static const bool CFS_PUT_NUM_CONTACT_POINTS = false;
 
@@ -324,7 +327,7 @@ public:
     void solve();
     void setConstraintPoints();
     void extractConstraintPoints(const CollisionPair& collisionPair);
-    bool setContactConstraintPoint(LinkPair& linkPair, const Collision& collision);
+    bool setContactConstraintPoint(LinkPair& linkPair, const Collision& collision, bool enableCulling);
     void setFrictionVectors(ConstraintPoint& constraintPoint);
     void setExtraJointConstraintPoints(const ExtraJointLinkPairPtr& linkPair);
     void set2dConstraintPoints(const Constrain2dLinkPairPtr& linkPair);
@@ -413,6 +416,10 @@ public:
     TimeMeasure timer;
 #endif
 
+    bool enableClusteringCollisionPoints;
+    int numofClusters;
+    bool kMeansClustering(const vector<Collision>& collisions, vector<Collision>& out_collisions, double cullingDepth);
+    bool kMeansPlusClustering(const vector<Collision>& collisions, vector<Collision>& out_collisions, double cullingDepth);
 };
 
 /*
@@ -448,6 +455,9 @@ CFSImpl::ConstraintForceSolverImpl(WorldBase& world) :
     isConstraintForceOutputMode = false;
     isSelfCollisionDetectionEnabled.clear();
     is2Dmode = false;
+
+    enableClusteringCollisionPoints = true;
+    numofClusters = DEFAULT_NUM_OF_CLUSTERS;
 }
 
 
@@ -906,9 +916,37 @@ void CFSImpl::extractConstraintPoints(const CollisionPair& collisionPair)
     
     pLinkPair->bodyData[0]->hasConstrainedLinks = true;
     pLinkPair->bodyData[1]->hasConstrainedLinks = true;
-    
-    for(size_t i=0; i < collisions.size(); ++i){
-        setContactConstraintPoint(*pLinkPair, collisions[i]);
+
+    bool clusteringResult = false;
+    if(enableClusteringCollisionPoints && collisions.size() > numofClusters){
+        vector<Collision> out_collisions;
+        clusteringResult = kMeansPlusClustering(collisions, out_collisions, pLinkPair->contactMaterial->cullingDepth);
+        if(clusteringResult){
+
+            if(K_MEANS_CLUSTERING_DEBUG1){
+                cout << "original" << endl;
+                for(int i=0; i<collisions.size(); i++){
+                    const Collision& col = collisions[i];
+                    cout << col.point.x() << " " << col.point.y() << " " << col.point.z() << " " <<
+                            col.normal.x() << " " << col.normal.y() << " " <<col.normal.z() << " " <<col.depth << endl;
+                }
+                cout << endl;
+                cout << "clustering" << endl;
+                for(int i=0; i<out_collisions.size(); i++){
+                    Collision& col = out_collisions[i];
+                    cout << col.point.x() << " " << col.point.y() << " " << col.point.z() << " " <<
+                            col.normal.x() << " " << col.normal.y() << " " <<col.normal.z() << " " <<col.depth << endl;
+                }
+            }
+            for(size_t i=0; i < out_collisions.size(); ++i){
+                setContactConstraintPoint(*pLinkPair, out_collisions[i], false);
+            }
+        }
+    }
+    if(!clusteringResult){
+        for(size_t i=0; i < collisions.size(); ++i){
+            setContactConstraintPoint(*pLinkPair, collisions[i], true);
+        }
     }
 
     if(!pLinkPair->constraintPoints.empty()){
@@ -920,11 +958,13 @@ void CFSImpl::extractConstraintPoints(const CollisionPair& collisionPair)
 /**
    @retuen true if the point is actually added to the constraints
 */
-bool CFSImpl::setContactConstraintPoint(LinkPair& linkPair, const Collision& collision)
+bool CFSImpl::setContactConstraintPoint(LinkPair& linkPair, const Collision& collision, bool enableCulling)
 {
     // skip the contact which has too much depth
-    if(collision.depth > linkPair.contactMaterial->cullingDepth){
-        return false;
+    if(enableCulling){
+        if(collision.depth > linkPair.contactMaterial->cullingDepth){
+            return false;
+        }
     }
     
     ConstraintPointArray& constraintPoints = linkPair.constraintPoints;
@@ -934,11 +974,13 @@ bool CFSImpl::setContactConstraintPoint(LinkPair& linkPair, const Collision& col
     contact.point = collision.point;
 
     // dense contact points are eliminated
-    int nPrevPoints = constraintPoints.size() - 1;
-    for(int i=0; i < nPrevPoints; ++i){
-        if((constraintPoints[i].point - contact.point).norm() < linkPair.contactMaterial->cullingDistance){
-            constraintPoints.pop_back();
-            return false;
+    if(enableCulling){
+        int nPrevPoints = constraintPoints.size() - 1;
+        for(int i=0; i < nPrevPoints; ++i){
+            if((constraintPoints[i].point - contact.point).norm() < linkPair.contactMaterial->cullingDistance){
+                constraintPoints.pop_back();
+                return false;
+            }
         }
     }
 
@@ -2523,3 +2565,383 @@ double ConstraintForceSolver::getCollisionTime()
     return impl->collisionTime;
 }
 #endif
+
+
+bool CFSImpl::kMeansPlusClustering(const vector<Collision>& org, vector<Collision>& out, double cullingDepth)
+{
+    struct Sample{
+        int clusterId;
+        Vector6 data;
+        vector<double> dist;
+        double miniDist;
+        double depth;
+    };
+    vector<Sample> samples;
+
+    struct Cluster {
+        Vector6 center;
+        Vector6 sum;
+        int numofMember;
+        vector<int> addedMember;
+        vector<int> removedMember;
+        bool movedMember;
+        double depth;
+    };
+    vector<Cluster> cluster(numofClusters);
+
+    for(int i=0,j=0; i<org.size(); i++){
+        const Collision& col = org[i];
+        if(col.depth < cullingDepth ){
+            samples.push_back(Sample());
+            Sample& sample = samples.back();
+            sample.data.block(0,0,3,1) = col.point;
+            sample.data.block(3,0,3,1) = col.normal;
+            sample.depth = col.depth;
+            sample.dist.resize(numofClusters);
+            sample.miniDist = std::numeric_limits<double>::max();
+        }
+    }
+
+    int n = samples.size();
+    if(n <= numofClusters){
+        return false;
+    }
+
+    // center Initialize
+    int randId = (int)((double)rand() / ((double)RAND_MAX + 1) * (n-1));
+    cluster[0].center = samples[randId].data;
+    for(int i=1; i<numofClusters; i++) {
+        for(int j = 0; j < n; j++) {
+            Sample& sample_ = samples[j];
+            double& dist_ = sample_.dist[i-1];
+            dist_ = (sample_.data - cluster[i-1].center).squaredNorm() ;
+            if(dist_ < sample_.miniDist){
+                sample_.miniDist = dist_;
+                sample_.clusterId = i-1;
+            }
+        }
+        double maxDist = -1;
+        int maxId = 0;
+        for(int j = 0; j < n; j++) {
+            Sample& sample_ = samples[j];
+            if(maxDist < sample_.miniDist){
+                maxDist = sample_.miniDist;
+                maxId = j;
+            }
+        }
+        cluster[i].center = samples[maxId].data;
+        samples[maxId].clusterId = i;
+    }
+
+    for(int i=0; i<numofClusters; i++){
+        Cluster& cluster_ = cluster[i];
+        cluster_.sum = Vector6::Zero();
+        cluster_.numofMember = 0;
+        cluster_.addedMember.clear();
+        cluster_.removedMember.clear();
+        cluster_.movedMember = true;
+        cluster_.depth = 0;
+    }
+
+    for(int i=0; i<n; i++){
+        Cluster& cluster_ = cluster[samples[i].clusterId];
+        cluster_.numofMember++;
+        cluster_.sum += samples[i].data;
+    }
+
+    for(int i=0; i<numofClusters; i++){
+        Cluster& cluster_ = cluster[i];
+        if(!cluster_.numofMember){
+            return false;
+        }
+        cluster_.center = cluster_.sum / cluster_.numofMember;
+        if(K_MEANS_CLUSTERING_DEBUG){
+            cout << "[" << cluster_.center[0] << "  " << cluster_.center[1] << "]  ";
+        }
+    }
+    if(K_MEANS_CLUSTERING_DEBUG){
+        cout << endl;
+    }
+
+    int numofIterations = 100;
+    bool iterations = true;
+    while(numofIterations-- && iterations){
+        iterations = false;
+        for(int i=0; i<n; i++){
+            Sample& sample = samples[i];
+
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << "[[" << i << "]] " << sample.clusterId << " : ";
+            }
+
+            int miniId = 0;
+            for(int j=0; j<numofClusters; j++){
+                Cluster& cluster_ = cluster[j];
+                if(cluster_.movedMember){
+                    sample.dist[j] = (sample.data - cluster_.center).squaredNorm();
+                }
+                if(K_MEANS_CLUSTERING_DEBUG){
+                    cout << sample.dist[j] << " ";
+                }
+                if(j>=1){
+                    if(sample.dist[j] < sample.dist[miniId]){
+                        miniId = j;
+                    }
+                }
+            }
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << " -> " << miniId <<endl;
+            }
+            if(miniId!=sample.clusterId){
+                Cluster& cluster0 = cluster[sample.clusterId];
+                cluster0.removedMember.push_back(i);
+                cluster0.numofMember--;
+                sample.clusterId = miniId;
+                Cluster& cluster1 = cluster[miniId];
+                cluster1.addedMember.push_back(i);
+                cluster1.numofMember++;
+                iterations = true;
+            }
+        }
+        if(iterations){
+            for(int j=0; j<numofClusters; j++){
+                Cluster& cluster_ = cluster[j];
+                cluster_.movedMember = !(cluster_.removedMember.empty() && cluster_.addedMember.empty());
+                if(cluster_.movedMember){
+                    for(int k=0; k<cluster_.removedMember.size(); k++){
+                        Sample& sample = samples[cluster_.removedMember[k]];
+                        cluster_.sum -= sample.data;
+                    }
+                    cluster_.removedMember.clear();
+                    for(int k=0; k<cluster_.addedMember.size(); k++){
+                        Sample& sample = samples[cluster_.addedMember[k]];
+                        cluster_.sum += sample.data;
+                    }
+                    cluster_.addedMember.clear();
+                    if(cluster_.numofMember){
+                        cluster_.center = cluster_.sum / cluster_.numofMember;
+                    }else{
+                        cluster_.center = Vector6::Zero();
+                    }
+                }
+                if(K_MEANS_CLUSTERING_DEBUG){
+                    cout << "[" << cluster_.center[0] << "  " << cluster_.center[1] << "]  ";
+                }
+            }
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << endl;
+            }
+        }
+    }
+
+    out.clear();
+    if(!iterations){
+        for(int i=0; i<n; i++){
+            int Id = samples[i].clusterId;
+            Cluster& cluster_ = cluster[Id];
+            cluster_.depth += samples[i].depth;
+        }
+        for(int j=0; j<numofClusters; j++){
+            Cluster& cluster_ = cluster[j];
+            if(cluster_.numofMember){
+                out.push_back(Collision());
+                Collision& collision = out.back();
+                collision.point = cluster_.center.block(0,0,3,1);
+                collision.normal = cluster_.center.block(3,0,3,1);
+                collision.depth = cluster_.depth / cluster_.numofMember;
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+
+bool CFSImpl::kMeansClustering(const vector<Collision>& org, vector<Collision>& out, double cullingDepth)
+{
+    struct CollisionData{
+        int clusterId;
+        vector<double> dist;
+    };
+    int n = org.size();
+    vector<CollisionData> collisionData(n);
+
+    struct Cluster {
+        Vector3 center0, center1;
+        Vector3 sum0, sum1;
+        int numofMember;
+        vector<int> addedMember;
+        vector<int> removedMember;
+        bool movedMember;
+        double depth;
+    };
+    vector<Cluster> cluster(numofClusters);
+
+
+    for(int i=0; i<numofClusters; i++){
+        Cluster& cluster_ = cluster[i];
+        cluster_.sum0 = Vector3::Zero();
+        cluster_.sum1 = Vector3::Zero();
+        cluster_.numofMember = 0;
+        cluster_.addedMember.clear();
+        cluster_.removedMember.clear();
+        cluster_.movedMember = true;
+        cluster_.depth = 0;
+    }
+
+    for(int i=0,j=0; i<n; i++){
+        CollisionData& collisionData_ = collisionData[i];
+        if(org[i].depth > cullingDepth ){
+            collisionData_.clusterId = -1;
+        }else{
+            int Id = j%numofClusters;
+            j++;
+            collisionData_.clusterId = Id;
+            collisionData_.dist.resize(numofClusters);
+            Cluster& cluster_ = cluster[Id];
+            cluster_.numofMember++;
+            cluster_.sum0 += org[i].point;
+            cluster_.sum1 += org[i].normal;
+        }
+    }
+
+    for(int i=0; i<numofClusters; i++){
+        Cluster& cluster_ = cluster[i];
+        cluster_.center0 = cluster_.sum0 / cluster_.numofMember;
+        cluster_.center1 = cluster_.sum1 / cluster_.numofMember;
+        if(K_MEANS_CLUSTERING_DEBUG){
+            cout << "[" << cluster_.center0[0] << "  " << cluster_.center0[1] << "]  ";
+        }
+    }
+    if(K_MEANS_CLUSTERING_DEBUG){
+        cout << endl;
+    }
+
+    int numofIterations = 100;
+    bool iterations = true;
+    while(numofIterations-- && iterations){
+        iterations = false;
+        for(int i=0; i<n; i++){
+            const Collision& org_ = org[i];
+            CollisionData& collisionData_ = collisionData[i];
+            if(collisionData_.clusterId < 0)
+                continue;
+
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << "[[" << i << "]] " << collisionData_.clusterId << " : ";
+            }
+            int miniId = 0;
+            for(int j=0; j<numofClusters; j++){
+                Cluster& cluster_ = cluster[j];
+                if(cluster_.movedMember){
+                    collisionData_.dist[j] = (org_.point - cluster_.center0).squaredNorm() +
+                            (org_.normal - cluster_.center1).squaredNorm();
+                }
+                if(K_MEANS_CLUSTERING_DEBUG){
+                    cout << collisionData_.dist[j] << " ";
+                }
+                if(j>=1){
+                    if(collisionData_.dist[j] < collisionData_.dist[miniId]){
+                        miniId = j;
+                    }
+                }
+            }
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << " -> " << miniId <<endl;
+            }
+            if(miniId!=collisionData_.clusterId){
+                Cluster& cluster0 = cluster[collisionData_.clusterId];
+                cluster0.removedMember.push_back(i);
+                cluster0.numofMember--;
+                collisionData_.clusterId = miniId;
+                Cluster& cluster1 = cluster[miniId];
+                cluster1.addedMember.push_back(i);
+                cluster1.numofMember++;
+                iterations = true;
+            }
+        }
+        if(iterations){
+            for(int j=0; j<numofClusters; j++){
+                Cluster& cluster_ = cluster[j];
+                cluster_.movedMember = !(cluster_.removedMember.empty() && cluster_.addedMember.empty());
+                if(cluster_.movedMember){
+                    for(int k=0; k<cluster_.removedMember.size(); k++){
+                        const Collision& org_ = org[cluster_.removedMember[k]];
+                        cluster_.sum0 -= org_.point;
+                        cluster_.sum1 -= org_.normal;
+                    }
+                    cluster_.removedMember.clear();
+                    for(int k=0; k<cluster_.addedMember.size(); k++){
+                        const Collision& org_ = org[cluster_.addedMember[k]];
+                        cluster_.sum0 += org_.point;
+                        cluster_.sum1 += org_.normal;
+                    }
+                    cluster_.addedMember.clear();
+                    if(cluster_.numofMember){
+                        cluster_.center0 = cluster_.sum0 / cluster_.numofMember;
+                        cluster_.center1 = cluster_.sum1 / cluster_.numofMember;
+                    }else{
+                        cluster_.center0 = Vector3::Zero();
+                        cluster_.center1 = Vector3::Zero();
+                    }
+                }
+                if(K_MEANS_CLUSTERING_DEBUG){
+                    cout << "[" << cluster_.center0[0] << "  " << cluster_.center0[1] << "]  ";
+                }
+            }
+            if(K_MEANS_CLUSTERING_DEBUG){
+                cout << endl;
+            }
+        }
+    }
+
+    out.clear();
+    if(!iterations){
+        for(int i=0; i<n; i++){
+            int Id = collisionData[i].clusterId;
+            if(Id >= 0){
+                Cluster& cluster_ = cluster[Id];
+                cluster_.depth += org[i].depth;
+            }
+        }
+        for(int j=0; j<numofClusters; j++){
+            Cluster& cluster_ = cluster[j];
+            if(cluster_.numofMember){
+                out.push_back(Collision());
+                Collision& collision = out.back();
+                collision.point = cluster_.center0;
+                collision.normal = cluster_.center1;
+                collision.depth = cluster_.depth / cluster_.numofMember;
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+
+void ConstraintForceSolver::enableClusteringCollisionPoints(bool on)
+{
+    impl->enableClusteringCollisionPoints = on;
+}
+
+
+bool ConstraintForceSolver::clusteringCollisionPoints()
+{
+    return impl->enableClusteringCollisionPoints;
+}
+
+
+void ConstraintForceSolver::setNumOfCluster(int n)
+{
+    impl->numofClusters = n;
+}
+
+
+int ConstraintForceSolver::numOfCluster()
+{
+    return impl->numofClusters;
+}
+

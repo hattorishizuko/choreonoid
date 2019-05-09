@@ -115,6 +115,9 @@ public:
     DyBody* forcedPositionBody;
     Position forcedBodyPosition;
 
+    bool enableClusteringCollisionPoints;
+    int numofClusters;
+
     AISTSimulatorItemImpl(AISTSimulatorItem* self);
     AISTSimulatorItemImpl(AISTSimulatorItem* self, const AISTSimulatorItemImpl& org);
     bool initializeSimulation(const std::vector<SimulationBody*>& simBodies);
@@ -179,6 +182,9 @@ AISTSimulatorItemImpl::AISTSimulatorItemImpl(AISTSimulatorItem* self)
     isKinematicWalkingEnabled = false;
     is2Dmode = false;
     isOldAccelSensorMode = false;
+
+    enableClusteringCollisionPoints = cfs.clusteringCollisionPoints();
+    numofClusters = cfs.numOfCluster();
 }
 
 
@@ -208,6 +214,8 @@ AISTSimulatorItemImpl::AISTSimulatorItemImpl(AISTSimulatorItem* self, const AIST
     isKinematicWalkingEnabled = org.isKinematicWalkingEnabled;
     is2Dmode = org.is2Dmode;
     isOldAccelSensorMode = org.isOldAccelSensorMode;
+    enableClusteringCollisionPoints = org.enableClusteringCollisionPoints;
+    numofClusters = org.numofClusters;
 }
 
 
@@ -438,6 +446,9 @@ bool AISTSimulatorItemImpl::initializeSimulation(const std::vector<SimulationBod
     cfs.setContactCullingDepth(contactCullingDepth.value());
     cfs.setCoefficientOfRestitution(epsilon);
     cfs.setCollisionDetector(self->getOrCreateCollisionDetector());
+
+    cfs.enableClusteringCollisionPoints(enableClusteringCollisionPoints);
+    cfs.setNumOfCluster(numofClusters);
 
     if(is2Dmode){
         cfs.set2Dmode(true);
@@ -683,6 +694,8 @@ void AISTSimulatorItemImpl::doPutProperties(PutPropertyFunction& putProperty)
                 changeProperty(isKinematicWalkingEnabled));
     putProperty(_("2D mode"), is2Dmode, changeProperty(is2Dmode));
     putProperty(_("Old accel sensor mode"), isOldAccelSensorMode, changeProperty(isOldAccelSensorMode));
+    putProperty(_("Enable Clustering Collision Points"), enableClusteringCollisionPoints, changeProperty(enableClusteringCollisionPoints));
+    putProperty(_("Num of Clusters"), numofClusters, changeProperty(numofClusters));
 }
 
 
@@ -709,6 +722,8 @@ bool AISTSimulatorItemImpl::store(Archive& archive)
     archive.write("kinematicWalking", isKinematicWalkingEnabled);
     archive.write("2Dmode", is2Dmode);
     archive.write("oldAccelSensorMode", isOldAccelSensorMode);
+    archive.write("enableClusteringCollisionPoints", enableClusteringCollisionPoints);
+    archive.write("numofClusters", numofClusters);
     return true;
 }
 
@@ -743,6 +758,8 @@ bool AISTSimulatorItemImpl::restore(const Archive& archive)
     archive.read("kinematicWalking", isKinematicWalkingEnabled);
     archive.read("2Dmode", is2Dmode);
     archive.read("oldAccelSensorMode", isOldAccelSensorMode);
+    archive.read("enableClusteringCollisionPoints", enableClusteringCollisionPoints);
+    archive.read("numofClusters", numofClusters);
     return true;
 }
 

@@ -76,6 +76,11 @@ public:
     
     void registerCollisionHandler(const std::string& name, CollisionHandler handler);
     bool unregisterCollisionHandler(const std::string& name);
+
+    void enableClusteringCollisionPoints(bool on);
+    bool clusteringCollisionPoints();
+    void setNumOfCluster(int n);
+    int numOfCluster();
 };
 
 };
