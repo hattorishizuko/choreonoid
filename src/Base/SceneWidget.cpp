@@ -429,7 +429,11 @@ void SceneWidget::forEachInstance(SgNode* node, std::function<void(SceneWidget* 
 
 SceneWidget::SceneWidget()
 {
+#ifdef ENABLE_SIMULATION_PROFILING
+    bool useGLSL = false;
+#else
     bool useGLSL = (getenv("CNOID_USE_GLSL") != 0);
+#endif
 
     QGLFormat format;
     if(useGLSL){
@@ -710,11 +714,11 @@ void SceneWidgetImpl::paintGL()
     }
 
 #ifdef ENABLE_SIMULATION_PROFILING
-    renderer->setColor(Vector3f(1.0f, 1.0f, 1.0f));
     int n = self->profilingNames.size();
     if(self->profilingTimes.size() == n){
         QFont font("monospace");
         font.setStyleHint(QFont::Monospace);
+        qglColor(QColor(Qt::white));
         for(int i=0; i<n; i++){
             switch(profiling_mode){
             case 0:{
@@ -733,6 +737,10 @@ void SceneWidgetImpl::paintGL()
             case 2:{
                 renderText(20, 20+20*i, QString::fromStdString(self->profilingNames[i]) + QString(": %1 micros").arg(self->profilingTimes[i]*1.0e-3,6,'f',0), font);
                 }
+                break;
+            case 3:{
+                renderText(20, 20+20*i, QString::fromStdString(self->profilingNames[i]) + QString(": %1 ms").arg(self->profilingTimes[i]*1.0e-6, 3, 'f', 0), font);
+            }
                 break;
             }
         }
@@ -1227,7 +1235,7 @@ void SceneWidgetImpl::keyPressEvent(QKeyEvent* event)
 #ifdef ENABLE_SIMULATION_PROFILING
         case Qt::Key_P:
             profiling_mode++;
-            profiling_mode %= 3;
+            profiling_mode %= 4;
             break;
 #endif
         default:

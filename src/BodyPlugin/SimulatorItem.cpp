@@ -293,6 +293,7 @@ public:
     Deque2D<double> simProfilingBuf;
     MultiValueSeq simProfilingSeq;
     SceneWidget* sw;
+    vector<double> totalTimes;
 #endif
 
     void findTargetItems(Item* item, bool isUnderBodyItem, ItemList<Item>& out_targetItems);
@@ -1804,6 +1805,7 @@ void SimulatorItemImpl::run()
 
 #ifdef ENABLE_SIMULATION_PROFILING
     QElapsedTimer oneStepTimer;
+    bool initTotalTimes = false;
 #endif
 
     int frame = 0;
@@ -1841,10 +1843,16 @@ void SimulatorItemImpl::run()
                 double oneStepTime = oneStepTimer.nsecsElapsed();
                 vector<double> profilingTimes;
                 self->getProfilingTimes(profilingTimes);
+                if(!initTotalTimes){
+                    totalTimes.resize(profilingTimes.size());
+                    fill(totalTimes.begin(), totalTimes.end(), 0.0);
+                    initTotalTimes = true;
+                }
                 Deque2D<double>::Row buf = simProfilingBuf.append();
                 int i=0;
                 for(; i<profilingTimes.size(); i++){
                     buf[i] = profilingTimes[i] * 1.0e9;
+                    totalTimes[i] += profilingTimes[i];
                 }
                 buf[i++] = controllerTime;
                 for(size_t k=0; k < activeControllers.size(); k++){
@@ -1900,10 +1908,16 @@ void SimulatorItemImpl::run()
                 double oneStepTime = oneStepTimer.nsecsElapsed();
                 vector<double> profilingTimes;
                 self->getProfilingTimes(profilingTimes);
+                if(!initTotalTimes){
+                    totalTimes.resize(profilingTimes.size());
+                    fill(totalTimes.begin(), totalTimes.end(), 0.0);
+                    initTotalTimes = true;
+                }
                 Deque2D<double>::Row buf = simProfilingBuf.append();
                 int i=0;
                 for(; i<profilingTimes.size(); i++){
                     buf[i] = profilingTimes[i] * 1.0e9;
+                    totalTimes[i] += profilingTimes[i];
                 }
                 buf[i++] = controllerTime;
                 for(size_t k=0; k < activeControllers.size(); k++){
@@ -2285,6 +2299,14 @@ void SimulatorItemImpl::onSimulationLoopStopped()
     mv->notify(format(_("Simulation by {0} has finished at {1} [s]."), self->name(), finishTime));
     mv->putln(format(_("Computation time is {0} [s], computation time / simulation time = {1}."),
                      actualSimulationTime, (actualSimulationTime / finishTime)));
+
+#ifdef ENABLE_SIMULATION_PROFILING
+    vector<string> profilingNames;
+    self->getProfilingNames(profilingNames);
+    for(int i=0; i<totalTimes.size(); i++){
+        mv->putln(format("{0}(total) {1} s",profilingNames[i], totalTimes[i]));
+    }
+#endif
 
     clearSimulation();
 
